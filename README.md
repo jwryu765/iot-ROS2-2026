@@ -3,6 +3,7 @@ IoT개발자 과정 ROS 로봇 프로그래밍
 
 ## 1일차
 - 다운로드 및 세팅
+    - ROS2 jazzy 다운로드(라즈베리파이{VNC}, VM WARE) - [문서링크](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html)
 
 - 라즈베리파이에 다운로드
     - 라즈베리 이메저를 통해 라즈베리파이 SD카드 초기화 및 재설치(우분투설치)
