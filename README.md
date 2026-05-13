@@ -98,3 +98,14 @@ IoT개발자 과정 ROS 로봇 프로그래밍
 
     3. python -m ipykernel install --user --name .venv --display-name "python(ros:jazzy)"
        ```
+
+## 3일차
+- VM WARE를 통한 우분투로 터틀심 가동
+- 아두이노 활용(스케치 아두이노 IDE 2.3.8설치)
+- 아두이노에서 LED 전구 불 켜보기
+    ![alt text](image.png)
+
+- 아두이노에서 문자 출력해보기
+    ![alt text](image-1.png)
+
+- 아두이노에서 문자 출력에 따라 LED를 키고 끄고 LED색변경 하는 기능 구현
