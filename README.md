@@ -550,3 +550,191 @@ ros2 run dht_sensor_bridge dht_node
 [INFO] [dht_node]: Temp: 24.5 C, Humidity: 45.0 %
 [INFO] [dht_node]: Temp: 24.5 C, Humidity: 45.0 %
 ```
+
+## 5일차
+
+### ⚙️ ROS2 Smart Auto Gate System
+
+- **ROS2** 환경에서 여러 센서 데이터를 융합하여 상황에 따라 게이트를 자동으로 제어하는 스마트 시스템입니다. 초음파, 조도, 온습도 데이터를 실시간으로 분석하여 출입 관리 및 비상 개방 기능을 수행합니다.
+---
+
+#### 1. 시스템 아키텍처
+- 시스템은 아두이노(하드웨어 제어)와 라즈베리파이(ROS2 로직) 간의 시리얼 통신을 기반으로 작동합니다.
+
+    ![alt text](<스크린샷 2026-05-15 131102.png>)
+
+    - **`arduino_bridge_node`**: 아두이노와 시리얼 통신을 통해 센서 데이터를 수집하고 토픽을 발행하며, 제어 명령을 전달합니다.
+    - **`controller_node`**: 수신된 센서 데이터를 바탕으로 게이트 개폐 및 LED 작동 여부를 판단하는 중앙 제어 장치입니다.
+
+#### 2. 주요 기능 (Integrated Logic)
+게이트와 LED는 다음 **OR 조건** 중 하나라도 충족될 때 활성화(OPEN/ON)됩니다.
+1. **접근 감지**: 초음파 센서 거리 < 15cm
+2. **야간 감지**: 조도 센서 값 < 400 (어두울 때)
+3. **비상 감지**: 주변 온도 >= 40°C (화재 등 비상 상황)
+
+#### 3. 하드웨어 구성 및 핀 맵
+- **Controller**: Arduino Uno, Raspberry Pi 4 (Ubuntu 20.04/22.04)
+- **Sensors**: HC-SR04 (초음파: Trig 9, Echo 8), DHT11 (온습도: 2), Cds (조도: A0)
+- **Actuators**: 28BYJ-48 Step Motor (모터: 4, 5, 6, 7), RGB LED (Red: 10, Common Anode)
+---
+
+#### 4. Source Code
+
+##### 4.1 Arduino Bridge Node (`arduino_bridge_node.py`)
+- 아두이노의 시리얼 데이터를 ROS2 토픽으로 변환하고, ROS2의 제어 명령을 아두이노로 전달하는 노드입니다.
+
+    ```python
+    import rclpy
+    from rclpy.node import Node
+    from std_msgs.msg import Int32, String
+    import serial
+
+    class ArduinoBridgeNode(Node):
+        def __init__(self):
+            super().__init__('arduino_bridge_node')
+            
+            # Publishers
+            self.pub_dist = self.create_publisher(Int32, '/distance', 10)
+            self.pub_temp = self.create_publisher(Int32, '/temperature', 10)
+            self.pub_hum = self.create_publisher(Int32, '/humidity', 10)
+            self.pub_cds = self.create_publisher(Int32, '/light_level', 10)
+            
+            # Subscribers
+            self.create_subscription(String, '/gate_cmd', self.gate_cb, 10)
+            self.create_subscription(String, '/led_cmd', self.led_cb, 10)
+            
+            # Serial Connection
+            try:
+                self.ser = serial.Serial('/dev/ttyACM0', 115200, timeout=0.1)
+                self.get_logger().info('Arduino Serial Connected Successfully!')
+            except Exception as e:
+                self.get_logger().error(f'Serial Port Error: {e}')
+                return
+
+            self.timer = self.create_timer(0.1, self.read_serial)
+
+        def gate_cb(self, msg):
+            cmd = msg.data + '\n'
+            self.ser.write(cmd.encode('utf-8'))
+
+        def led_cb(self, msg):
+            cmd = msg.data + '\n'
+            self.ser.write(cmd.encode('utf-8'))
+
+        def read_serial(self):
+            if self.ser.in_waiting > 0:
+                try:
+                    line = self.ser.readline().decode('utf-8').strip()
+                    if line.startswith("DIST:"):
+                        parts = line.split(',')
+                        self.pub_dist.publish(Int32(data=int(parts[0].split(':')[1])))
+                        self.pub_temp.publish(Int32(data=int(parts[1].split(':')[1])))
+                        self.pub_hum.publish(Int32(data=int(parts[2].split(':')[1])))
+                        self.pub_cds.publish(Int32(data=int(parts[3].split(':')[1])))
+                except Exception:
+                    pass 
+
+    def main(args=None):
+        rclpy.init(args=args)
+        node = ArduinoBridgeNode()
+        rclpy.spin(node)
+        node.destroy_node()
+        rclpy.shutdown()
+
+    if __name__ == '__main__':
+        main()
+    ```
+
+##### 4.2 Controller Node (`controller_node.py`)
+- 세 가지 센서 데이터를 융합(Sensor Fusion)하여 게이트와 조명을 제어하는 메인 로직 노드입니다.
+
+    ```python
+    import rclpy
+    from rclpy.node import Node
+    from std_msgs.msg import Int32, String
+
+    class ControllerNode(Node):
+        def __init__(self):
+            super().__init__('controller_node')
+            
+            # Subscribers
+            self.create_subscription(Int32, '/distance', self.dist_cb, 10)
+            self.create_subscription(Int32, '/light_level', self.light_cb, 10)
+            self.create_subscription(Int32, '/temperature', self.temp_cb, 10)
+            
+            # Publishers
+            self.pub_gate = self.create_publisher(String, '/gate_cmd', 10)
+            self.pub_led = self.create_publisher(String, '/led_cmd', 10)
+            
+            self.current_dist = 999
+            self.current_light = 999
+            self.current_temp = 0
+            
+            self.gate_state = "CLOSED"
+            self.led_state = "OFF"
+            
+            self.get_logger().info('Integrated Smart Gate Controller is Ready!')
+
+        def dist_cb(self, msg):
+            self.current_dist = msg.data
+            self.process_logic()
+
+        def light_cb(self, msg):
+            self.current_light = msg.data
+            self.process_logic()
+
+        def temp_cb(self, msg):
+            self.current_temp = msg.data
+            self.process_logic()
+
+        def process_logic(self):
+            # Activation Logic (Distance < 15cm OR Light < 400 OR Temp >= 40C)
+            should_activate = (self.current_dist < 15) or (self.current_light < 400) or (self.current_temp >= 40)
+            
+            target_gate = "OPEN" if should_activate else "CLOSED"
+            target_led = "ON" if should_activate else "OFF"
+
+            if self.gate_state != target_gate:
+                self.gate_state = target_gate
+                cmd = String()
+                cmd.data = "G_OPEN" if target_gate == "OPEN" else "G_CLOSE"
+                self.pub_gate.publish(cmd)
+                self.get_logger().info(f'Gate {target_gate}! (D:{self.current_dist}, L:{self.current_light}, T:{self.current_temp})')
+
+            if self.led_state != target_led:
+                self.led_state = target_led
+                cmd = String()
+                cmd.data = "L_ON" if target_led == "ON" else "L_OFF"
+                self.pub_led.publish(cmd)
+
+    def main(args=None):
+        rclpy.init(args=args)
+        node = ControllerNode()
+        rclpy.spin(node)
+        node.destroy_node()
+        rclpy.shutdown()
+
+    if __name__ == '__main__':
+        main()
+    ```
+---
+
+#### 5. 빌드 및 실행 방법
+
+##### 5.1 패키지 빌드
+```bash
+cd ~/ros2_ws
+colcon build --packages-select smart_gate
+source install/setup.bash
+```
+
+### 5.2 노드 실행
+**Terminal 1 (Bridge Node):** 아두이노와 통신을 시작합니다.
+```bash
+ros2 run smart_gate bridge_node
+```
+
+**Terminal 2 (Controller Node):** 자동화 판단 로직을 실행합니다.
+```bash
+ros2 run smart_gate controller_node
+```
